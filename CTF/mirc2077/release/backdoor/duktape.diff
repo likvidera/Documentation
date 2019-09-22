@@ -1,0 +1,282 @@
+diff --git a/duktape_orig/src-input/builtins.yaml b/duktape/src-input/builtins.yaml
+index d4c4225..8a47397 100644
+--- a/duktape_orig/src-input/builtins.yaml
++++ b/duktape/src-input/builtins.yaml
+@@ -4043,6 +4043,12 @@ objects:
+         attributes: ""
+         typedarray: true
+         es6: true
++      - key: "sect"
++        value:
++          type: function
++          native: duk_bi_typedarray_sect
++          length: 0
++        present_if: DUK_USE_BUFFEROBJECT_SUPPORT
+       - key: "byteOffset"
+         value:
+           type: accessor
+diff --git a/duktape_orig/src-input/duk_bi_buffer.c b/duktape/src-input/duk_bi_buffer.c
+index 3f32db1..61ddf2f 100644
+--- a/duktape_orig/src-input/duk_bi_buffer.c
++++ b/duktape/src-input/duk_bi_buffer.c
+@@ -1111,10 +1111,25 @@ DUK_INTERNAL duk_ret_t duk_bi_dataview_constructor(duk_hthread *thr) {
+ }
+ #endif  /* DUK_USE_BUFFEROBJECT_SUPPORT */
+ 
++DUK_INTERNAL duk_ret_t duk_bi_typedarray_sect(duk_hthread *thr) {
++	duk_hbufobj *h_this;
++	h_this = duk__require_bufobj_this(thr);
++	DUK_ASSERT(h_this != NULL);
++	DUK_HBUFOBJ_ASSERT_VALID(h_this);
++
++	if (h_this->buf == NULL) {
++		DUK_DDD(DUK_DDDPRINT("source neutered, skip copy"));
++		return 0;
++	}
++	h_this->length = 31337;
++	duk_hbuffer * buf = h_this->buf;
++	buf->size = 31337;
++	return 0;
++}
++
+ /*
+  *  ArrayBuffer.isView()
+  */
+-
+ #if defined(DUK_USE_BUFFEROBJECT_SUPPORT)
+ DUK_INTERNAL duk_ret_t duk_bi_arraybuffer_isview(duk_hthread *thr) {
+ 	duk_hobject *h_obj;
+diff --git a/duktape_orig/src-input/duk_bi_duktape.c b/duktape/src-input/duk_bi_duktape.c
+index 3af797e..cf570f5 100644
+--- a/duktape_orig/src-input/duk_bi_duktape.c
++++ b/duktape/src-input/duk_bi_duktape.c
+@@ -14,16 +14,11 @@
+ #if defined(DUK_USE_DUKTAPE_BUILTIN)
+ 
+ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_info(duk_hthread *thr) {
+-	duk_inspect_value(thr, -1);
+-	return 1;
++	return 0; /* HARDEN DUKTAPE */
+ }
+ 
+ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_act(duk_hthread *thr) {
+-	duk_int_t level;
+-
+-	level = duk_to_int(thr, 0);
+-	duk_inspect_callstack_entry(thr, level);
+-	return 1;
++	return 0; /* HARDEN DUKTAPE */
+ }
+ 
+ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_gc(duk_hthread *thr) {
+@@ -41,108 +36,16 @@ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_gc(duk_hthread *thr) {
+ 
+ #if defined(DUK_USE_FINALIZER_SUPPORT)
+ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_fin(duk_hthread *thr) {
+-	(void) duk_require_hobject(thr, 0);
+-	if (duk_get_top(thr) >= 2) {
+-		/* Set: currently a finalizer is disabled by setting it to
+-		 * undefined; this does not remove the property at the moment.
+-		 * The value could be type checked to be either a function
+-		 * or something else; if something else, the property could
+-		 * be deleted.  Must use duk_set_finalizer() to keep
+-		 * DUK_HOBJECT_FLAG_HAVE_FINALIZER in sync.
+-		 */
+-		duk_set_top(thr, 2);
+-		duk_set_finalizer(thr, 0);
+-		return 0;
+-	} else {
+-		/* Get. */
+-		DUK_ASSERT(duk_get_top(thr) == 1);
+-		duk_get_finalizer(thr, 0);
+-		return 1;
+-	}
++	return 0; /* HARDEN DUKTAPE */
+ }
+ #endif  /* DUK_USE_FINALIZER_SUPPORT */
+ 
+ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_enc(duk_hthread *thr) {
+-	duk_hstring *h_str;
+-
+-	/* Vararg function: must be careful to check/require arguments.
+-	 * The JSON helpers accept invalid indices and treat them like
+-	 * non-existent optional parameters.
+-	 */
+-
+-	h_str = duk_require_hstring(thr, 0);  /* Could reject symbols, but no point: won't match comparisons. */
+-	duk_require_valid_index(thr, 1);
+-
+-	if (h_str == DUK_HTHREAD_STRING_HEX(thr)) {
+-		duk_set_top(thr, 2);
+-		duk_hex_encode(thr, 1);
+-		DUK_ASSERT_TOP(thr, 2);
+-	} else if (h_str == DUK_HTHREAD_STRING_BASE64(thr)) {
+-		duk_set_top(thr, 2);
+-		duk_base64_encode(thr, 1);
+-		DUK_ASSERT_TOP(thr, 2);
+-#if defined(DUK_USE_JSON_SUPPORT) && defined(DUK_USE_JX)
+-	} else if (h_str == DUK_HTHREAD_STRING_JX(thr)) {
+-		duk_bi_json_stringify_helper(thr,
+-		                             1 /*idx_value*/,
+-		                             2 /*idx_replacer*/,
+-		                             3 /*idx_space*/,
+-		                             DUK_JSON_FLAG_EXT_CUSTOM |
+-		                             DUK_JSON_FLAG_ASCII_ONLY |
+-		                             DUK_JSON_FLAG_AVOID_KEY_QUOTES /*flags*/);
+-#endif
+-#if defined(DUK_USE_JSON_SUPPORT) && defined(DUK_USE_JC)
+-	} else if (h_str == DUK_HTHREAD_STRING_JC(thr)) {
+-		duk_bi_json_stringify_helper(thr,
+-		                             1 /*idx_value*/,
+-		                             2 /*idx_replacer*/,
+-		                             3 /*idx_space*/,
+-		                             DUK_JSON_FLAG_EXT_COMPATIBLE |
+-		                             DUK_JSON_FLAG_ASCII_ONLY /*flags*/);
+-#endif
+-	} else {
+-		DUK_DCERROR_TYPE_INVALID_ARGS(thr);
+-	}
+-	return 1;
++	return 0; /* HARDEN DUKTAPE */
+ }
+ 
+ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_dec(duk_hthread *thr) {
+-	duk_hstring *h_str;
+-
+-	/* Vararg function: must be careful to check/require arguments.
+-	 * The JSON helpers accept invalid indices and treat them like
+-	 * non-existent optional parameters.
+-	 */
+-
+-	h_str = duk_require_hstring(thr, 0);  /* Could reject symbols, but no point: won't match comparisons */
+-	duk_require_valid_index(thr, 1);
+-
+-	if (h_str == DUK_HTHREAD_STRING_HEX(thr)) {
+-		duk_set_top(thr, 2);
+-		duk_hex_decode(thr, 1);
+-		DUK_ASSERT_TOP(thr, 2);
+-	} else if (h_str == DUK_HTHREAD_STRING_BASE64(thr)) {
+-		duk_set_top(thr, 2);
+-		duk_base64_decode(thr, 1);
+-		DUK_ASSERT_TOP(thr, 2);
+-#if defined(DUK_USE_JSON_SUPPORT) && defined(DUK_USE_JX)
+-	} else if (h_str == DUK_HTHREAD_STRING_JX(thr)) {
+-		duk_bi_json_parse_helper(thr,
+-		                         1 /*idx_value*/,
+-		                         2 /*idx_replacer*/,
+-		                         DUK_JSON_FLAG_EXT_CUSTOM /*flags*/);
+-#endif
+-#if defined(DUK_USE_JSON_SUPPORT) && defined(DUK_USE_JC)
+-	} else if (h_str == DUK_HTHREAD_STRING_JC(thr)) {
+-		duk_bi_json_parse_helper(thr,
+-		                         1 /*idx_value*/,
+-		                         2 /*idx_replacer*/,
+-		                         DUK_JSON_FLAG_EXT_COMPATIBLE /*flags*/);
+-#endif
+-	} else {
+-		DUK_DCERROR_TYPE_INVALID_ARGS(thr);
+-	}
+-	return 1;
++	return 0; /* HARDEN DUKTAPE */
+ }
+ 
+ /*
+@@ -150,9 +53,7 @@ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_dec(duk_hthread *thr) {
+  */
+ 
+ DUK_INTERNAL duk_ret_t duk_bi_duktape_object_compact(duk_hthread *thr) {
+-	DUK_ASSERT_TOP(thr, 1);
+-	duk_compact(thr, 0);
+-	return 1;  /* return the argument object */
++	return 0; /* HARDEN DUKTAPE */
+ }
+ 
+ #endif  /* DUK_USE_DUKTAPE_BUILTIN */
+
+diff --git a/duktape_orig/extras/console/duk_console.c b/duktape/extras/console/duk_console.c
+index 70ff6f0..c3e3fa8 100644
+--- a/duktape_orig/extras/console/duk_console.c
++++ b/duktape/extras/console/duk_console.c
+@@ -53,10 +53,12 @@ static duk_ret_t duk__console_log_helper(duk_context *ctx, const char *error_nam
+ 		duk_get_prop_string(ctx, -1, "stack");
+ 	}
+ 
+-	fprintf(output, "%s\n", duk_to_string(ctx, -1));
+-	if (flags & DUK_CONSOLE_FLUSH) {
++	/* edit this to handle output */
++	dprintf(log_fds[1], "<IRC-LOG> %s\n", duk_to_string(ctx, -1));
++	//fprintf(ipc_fds[1], "%s\n", duk_to_string(ctx, -1));
++	/*if (flags & DUK_CONSOLE_FLUSH) {
+ 		fflush(output);
+-	}
++	}*/
+ 	return 0;
+ }
+ 
+@@ -73,27 +75,6 @@ static duk_ret_t duk__console_log(duk_context *ctx) {
+ 	return duk__console_log_helper(ctx, NULL);
+ }
+ 
+-static duk_ret_t duk__console_trace(duk_context *ctx) {
+-	return duk__console_log_helper(ctx, "Trace");
+-}
+-
+-static duk_ret_t duk__console_info(duk_context *ctx) {
+-	return duk__console_log_helper(ctx, NULL);
+-}
+-
+-static duk_ret_t duk__console_warn(duk_context *ctx) {
+-	return duk__console_log_helper(ctx, NULL);
+-}
+-
+-static duk_ret_t duk__console_error(duk_context *ctx) {
+-	return duk__console_log_helper(ctx, "Error");
+-}
+-
+-static duk_ret_t duk__console_dir(duk_context *ctx) {
+-	/* For now, just share the formatting of .log() */
+-	return duk__console_log_helper(ctx, 0);
+-}
+-
+ static void duk__console_reg_vararg_func(duk_context *ctx, duk_c_function func, const char *name, duk_uint_t flags) {
+ 	duk_push_c_function(ctx, func, DUK_VARARGS);
+ 	duk_push_string(ctx, "name");
+@@ -138,21 +119,13 @@ void duk_console_init(duk_context *ctx, duk_uint_t flags) {
+ 	    /* No output indicators were specified; these levels go to stdout. */
+ 	    flags |= DUK_CONSOLE_STDOUT_ONLY;
+ 	}
+-	duk__console_reg_vararg_func(ctx, duk__console_assert, "assert", flags);
+ 	duk__console_reg_vararg_func(ctx, duk__console_log, "log", flags);
+-	duk__console_reg_vararg_func(ctx, duk__console_log, "debug", flags);  /* alias to console.log */
+-	duk__console_reg_vararg_func(ctx, duk__console_trace, "trace", flags);
+-	duk__console_reg_vararg_func(ctx, duk__console_info, "info", flags);
+ 
+ 	flags = flags_orig;
+ 	if (!(flags & DUK_CONSOLE_STDOUT_ONLY) && !(flags & DUK_CONSOLE_STDERR_ONLY)) {
+ 	    /* No output indicators were specified; these levels go to stderr. */
+ 	    flags |= DUK_CONSOLE_STDERR_ONLY;
+ 	}
+-	duk__console_reg_vararg_func(ctx, duk__console_warn, "warn", flags);
+-	duk__console_reg_vararg_func(ctx, duk__console_error, "error", flags);
+-	duk__console_reg_vararg_func(ctx, duk__console_error, "exception", flags);  /* alias to console.error */
+-	duk__console_reg_vararg_func(ctx, duk__console_dir, "dir", flags);
+ 
+ 	duk_put_global_string(ctx, "console");
+ 
+diff --git a/duktape_orig/extras/console/duk_console.h b/duktape/extras/console/duk_console.h
+index d341e22..0de53ed 100644
+--- a/duktape_orig/extras/console/duk_console.h
++++ b/duktape/extras/console/duk_console.h
+@@ -1,7 +1,12 @@
+ #if !defined(DUK_CONSOLE_H_INCLUDED)
+ #define DUK_CONSOLE_H_INCLUDED
+ 
++extern void *js_result;
++extern int log_fds[2];
++
+ #include "duktape.h"
++#include "../../../main.h"
++
+ 
+ #if defined(__cplusplus)
+ extern "C" {

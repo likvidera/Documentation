@@ -1,0 +1,8 @@
+These are all the files we recovered from the agents USB-stick
+
+We also found a mention about a specific repository that you might want to take a look at:
+git clone -b v2.4.0 https://github.com/svaarala/duktape duktape
+
+The backdoor/duktape.diff file seems releveant to it.
+
+Best of luck!
