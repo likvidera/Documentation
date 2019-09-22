@@ -4,11 +4,9 @@
 TL;DR: The final exploit is in exploit/pwn64.js and is built dynamically from exploit/exploit.py.
 
 ![alt text](static/intro.png)  
-mirc2077 is meant to be a bite-size 'browser-pwnable'. The player can send a link which will be 'clicked' by the android. 
-
-If the link contains Javascript, it will be interpreted by Duktape (https://duktape.org). To make this interesting, an OOB-RW bug was introduced to the TypedArray object via a custom built-in.
-
-However, the JS-interpretation occurs in a heavily sandboxed child-process with seccomp. For the first flag, it's enough to get code-exec in the JS-interpretation-process but the end goal is to escape it by exploiting a bug in the IPC of the main-process.  
+```
+One of the rogue androids are hanging out in his private IRC, dealing warez and 0-days. He takes his OPSEC seriously and is behind 9000 proxies. An agent of ours managed to add a backdoor to the repository of his favourite IRC-client. Unfortunately we are scraping up whats left of him from a burning barrel.<br>We recovered this USB-stick, use whatever is on it to pwn and reveal the androids real IP-address. We'll do the rest ;)
+```
 ``` bash
 $ checksec --file ./mirc2077 
 [*] './mirc2077'
@@ -18,6 +16,11 @@ $ checksec --file ./mirc2077
     NX:       NX enabled
     PIE:      PIE enabled
 ```
+mirc2077 is meant to be a bite-size 'browser-pwnable'. The player can send a link which will be 'clicked' by the android. 
+
+If the link contains Javascript, it will be interpreted by Duktape (https://duktape.org). To make this interesting, an OOB-RW bug was introduced to the TypedArray object via a custom built-in.
+
+However, the JS-interpretation occurs in a heavily seccomp-sandboxed child-process. For the first flag, it's enough to get code-exec in the JS-interpretation-process but the end goal is to escape it by exploiting a bug in the IPC of the main-process.  
 
 
 ## Backdoor / Bug analysis
@@ -39,7 +42,7 @@ This is the mentioned 'backdoor' added to the IRC-clients repository.
 +	return 0;
 +}
 ```
-A built-in named `sect`is added to the TypedArray object. Calling this function will set the TypedArray and it's backing-buffer size to 31337. However, it will not reallocate the backing-buffer.  
+A built-in named `sect` was added to the TypedArray object. Calling this function will set the TypedArray and it's backing-buffer size to 31337. However, it will not reallocate the backing-buffer.  
 
 Therefore, if you allocate a TypedArray of a size less than 31337 and you use the `sect` built-in you'll be able to read and write out-of-bounds in the heap-memory.
 
@@ -272,7 +275,9 @@ No leak from the main-process is needed since the JS-interpreter is forked and t
 In short, we can use the same trick we used to execute our ROP-chain, find a suitable target on the stack and overwrite it with a ropchain. In my case, the target was `<exec_js_renderer+010d>` which will be hit when the `ipc_loop` returns. 
 
 The payload is simply a one_gadget / god_gadget from the libc.
-
+## Moneyshot
+![alt text](static/win.png)  
 
 # Creds
-**b0bb** - for proof-reading and being a pwn-brother from another mother
+**b0bb** - for proof-reading and being a pwn-brother from another mother  
+**je / OwariDa** - for the PIE-fixup script
