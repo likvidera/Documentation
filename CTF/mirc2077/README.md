@@ -279,5 +279,5 @@ The payload is simply a one_gadget / god_gadget from the libc.
 ![alt text](static/win.png)  
 
 # Creds
-**b0bb** - for proof-reading and being a pwn-brother from another mother  
+**b0bb** - proof-reading!
 **je / OwariDa** - for the PIE-fixup script
