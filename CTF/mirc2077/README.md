@@ -1,11 +1,14 @@
 
 # Mirc2077
 ## Intro
-If you came for the exploit, the final version is in exploit/pwn64.js and is built dynamically from exploit/exploit.py
+TL;DR: The final exploit is in exploit/pwn64.js and is built dynamically from exploit/exploit.py.
 
-In short, mirc2077 is meant to be a bite-size browser-pwnable. It uses DuktapeJS as its javascript engine. An OOB-RW bug is introduced to the TypedArray object via a custom built-in. 
+![alt text](https://raw.githubusercontent.com/likvidera/Documentation/tree/master/CTF/mirc2077/static/intro.png)
+mirc2077 is meant to be a bite-size 'browser-pwnable'. The player can send a link which will be 'clicked' by the android. 
 
-The JS-interpretation occurs in a heavily sandboxed child-process via seccomp. One must first get code-exec in it but the end goal is to escape its constraints. This can be done by exploiting a bug in the IPC of the main-process.  
+If the link contains Javascript, it will be interpreted by Duktape (https://duktape.org). To make this interesting, an OOB-RW bug was introduced to the TypedArray object via a custom built-in.
+
+However, the JS-interpretation occurs in a heavily sandboxed child-process with seccomp. For the first flag, it's enough to get code-exec in the JS-interpretation-process but the end goal is to escape it by exploiting a bug in the IPC of the main-process.  
 ```
 $ checksec --file ./mirc2077 
 [*] './mirc2077'
