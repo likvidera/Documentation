@@ -18,7 +18,7 @@ $ checksec --file ./mirc2077
 ```
 mirc2077 is meant to be a bite-size 'browser-pwnable'. The player can send a link which will be 'clicked' by the android. 
 
-If the link contains Javascript, it will be interpreted by Duktape (https://duktape.org). To make this interesting, an OOB-RW bug was introduced to the TypedArray object via a custom built-in.
+If the link contains Javascript, it will be interpreted by Duktape (https://duktape.org). To make this interesting, an out-of-bounds read and write bug was introduced to the TypedArray object via a custom built-in called `sect`.
 
 The JS-interpretation occurs in a heavily seccomp-sandboxed child-process. However, for the first flag, it's enough to get code-exec in the JS-interpretation-process but the end goal is to escape it by exploiting a bug in the IPC of the main-process.  
 
@@ -43,7 +43,7 @@ This is bug that was introduced to Duktape
 ```
 A built-in named `sect` was added to the TypedArray object. Calling this function will set the TypedArray and it's backing-buffer size to 31337. However, it will not reallocate the backing-buffer.  
 
-Therefore, if you allocate a TypedArray of a size less than 31337 and you use the `sect` built-in you'll be able to read and write out-of-bounds in the heap-memory.
+Therefore, if you allocate a TypedArray of a size less than 31337 and you call the `sect` built-in on it, you'll be able to read and write out-of-bounds in the heap-memory.
 
 With this limited out-of-bounds read/write primitive we can then find a suitable object in the heap to corrupt and create a fully controlled read/write-what-anywhere primitive.
 
@@ -275,11 +275,12 @@ No leak from the main-process is needed since the JS-interpreter is forked and t
 
 In short, we can use the same trick we used to execute our ROP-chain, find a suitable target on the stack and overwrite it with a ropchain. In my case, the target was `<exec_js_renderer+010d>` which will be hit when the `ipc_loop` returns. 
 
-The payload is simply a one_gadget / god_gadget from the libc.
-## Moneyshot
+The payload is simply a one_gadget / god_gadget from the libc which can be found using the tool https://github.com/david942j/one_gadget. Some of the stack is also zeroed out to fit the constraint of the one_gadget.
+
+## Exploit moneyshot
 ![alt text](static/win.png)  
 
 # Creds
-**b0bb** - proof-reading!  
+**b0bb** - for proof-reading and suggestions  
 **je / OwariDa** - for the PIE-fixup script  
 **saelo** - for the 64bit JS-framework  
