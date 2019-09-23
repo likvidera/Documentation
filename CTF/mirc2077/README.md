@@ -20,11 +20,10 @@ mirc2077 is meant to be a bite-size 'browser-pwnable'. The player can send a lin
 
 If the link contains Javascript, it will be interpreted by Duktape (https://duktape.org). To make this interesting, an OOB-RW bug was introduced to the TypedArray object via a custom built-in.
 
-However, the JS-interpretation occurs in a heavily seccomp-sandboxed child-process. For the first flag, it's enough to get code-exec in the JS-interpretation-process but the end goal is to escape it by exploiting a bug in the IPC of the main-process.  
+The JS-interpretation occurs in a heavily seccomp-sandboxed child-process. However, for the first flag, it's enough to get code-exec in the JS-interpretation-process but the end goal is to escape it by exploiting a bug in the IPC of the main-process.  
 
-
-## Backdoor / Bug analysis
-This is the mentioned 'backdoor' added to the IRC-clients repository.
+## Backdoor / Duktape bug analysis
+This is bug that was introduced to Duktape
 ``` diff
 +DUK_INTERNAL duk_ret_t duk_bi_typedarray_sect(duk_hthread *thr) {
 +	duk_hbufobj *h_this;
@@ -46,10 +45,12 @@ A built-in named `sect` was added to the TypedArray object. Calling this functio
 
 Therefore, if you allocate a TypedArray of a size less than 31337 and you use the `sect` built-in you'll be able to read and write out-of-bounds in the heap-memory.
 
-With this out-of-bounds read/write primitive we can then find a suitable object in the heap to corrupt and create a fully controlled read/write-what-anywhere primitive.
+With this limited out-of-bounds read/write primitive we can then find a suitable object in the heap to corrupt and create a fully controlled read/write-what-anywhere primitive.
 
 ## Code-exec in the sandboxed JS-interpreter process
-First we do some minor spraying with small TypedArrays where we trigger the vuln to create the OOB-RW-primitive. After that, some larger potential targets where we set magic values to search for.
+To achieve our wanted primitive, theres a bit of work to be done.
+
+First we do some minor spraying with small TypedArrays where we trigger the vuln to create the limited out-of-bounds-primitive. After that, some larger potential targets are sprayed where we set their data to magic values so we can search for them easily.
 ``` js
 /* defrag the heap */
 for(i = 0; i < pwn.defrag_heap_rounds; i++) {
@@ -89,7 +90,7 @@ struct duk_hbufobj {
 
 How the `duk_hbuffer` stores it's data is defined by it's headers magic value. If it's defined as external, then the data will be stored in a buffer pointed to by `duk_hbuffer->curr_alloc`. Otherwise, the data is kept after the structure.
 
-In the case of f.ex. `Float64Array(200)` a non-external `duk_hbuffer` is created but we want it to be external as the goal is to be able to control the `duk_hbuffer->curr_alloc` pointer.
+In the case of e.g. `Float64Array(200)` a non-external `duk_hbuffer` is created but we want it to be external as the goal is to be able to control the `duk_hbuffer->curr_alloc` pointer.
 ``` c
 struct duk_hbuffer {
   duk_heaphdr hdr;
@@ -162,7 +163,7 @@ Another option is to leak the `environ` pointer from libc. This points to the cu
 The ROP-chain is very simple. It will `mmap` an RWX page, `memcpy` the embedded shellcode there and jump to it while passing on a `shellcode_ctx` containing some addresses for the final payload.
 
 ## Sandbox constraints
-To understand the sandbox-restrictions you can dump the seccomp rules with https://github.com/david942j/seccomp-tools
+The sandbox-restrictions can be dumped with https://github.com/david942j/seccomp-tools
 ```c
  line  CODE  JT   JF      K
 =================================
@@ -184,7 +185,7 @@ To understand the sandbox-restrictions you can dump the seccomp rules with https
  0015: 0x06 0x00 0x00 0x7fff0000  return ALLOW
  0016: 0x06 0x00 0x00 0x00000000  return KILL
 ```
-Thankfully we can mmap RWX-pages which we can use to pivot to shellcode.
+Thankfully we can mmap RWX-pages for pivoting to shellcode where we can setup more elaborate IPC payloads.
 
 ## IPC communication
 The main process will fork a child-process and apply seccomp to it to do the 'dangerous' JS-interpretation. It will pass two file-descriptors to the sandboxed-process. One is to the Log-functionality and the other is for the IPC-functionality.
@@ -279,5 +280,6 @@ The payload is simply a one_gadget / god_gadget from the libc.
 ![alt text](static/win.png)  
 
 # Creds
-**b0bb** - proof-reading!
-**je / OwariDa** - for the PIE-fixup script
+**b0bb** - proof-reading!  
+**je / OwariDa** - for the PIE-fixup script  
+**saelo** - for the 64bit JS-framework  
