@@ -88,7 +88,6 @@ static void my_fatal(void *udata, const char *msg) {
   exit(0);
 }
 
-/* https://www.w0lfzhang.com/2017/11/29/Linux-Seccomp-Learning/ */
 u32 sandbox(void)
 {
   int rc = -1;
@@ -475,7 +474,6 @@ u32 ipc_loop(u32 pid)
   
   for(;;) 
   {
-    //printf("waiting ..\n");
     event_num = epoll_wait(event_fd, events, MAX_EVENTS, 30000);
     if(event_num == -1) {
       printf("<IRC-IPC-DBG> IPC disconnected\n");
