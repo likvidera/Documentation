@@ -20,7 +20,7 @@ $ checksec --file ./mirc2077
 ```
 
 ## Backdoor / Duktape bug analysis
-The player can send various messages to the android on 'IRC', this includes a link. If that link contains Javascript, it will be interpreted by the Duktape JS engine. To make this a bit more interesting, a bug was introduced to the Duktape source. The player recieved this diff that included this
+The player can send various messages to the android on 'IRC', this includes a link. If that link contains Javascript, it will be interpreted by the Duktape JS engine. This is a part of the diff that the player recieved that shows the bug that was introduced to Duktape.
 ``` diff
 +DUK_INTERNAL duk_ret_t duk_bi_typedarray_sect(duk_hthread *thr) {
 +	duk_hbufobj *h_this;
@@ -268,7 +268,7 @@ To exploit the IPC-bug, these steps are taken:
 * Call `ipc_cache_close` on the first cache to trigger the use-after-free scenario
 * Create the cache_data for the other caches (2-4) to reclaim the `cache` memory with a `cache->data_ptr` that points to the wanted target
 
-Now we can overwrite whatever `cache->data_ptr` points to via `ipc_cache_set_data`.
+Now we can overwrite whatever `cache->data_ptr` points to by calling `ipc_cache_set_data` on any of the duped caches that still has a reference to it.
 
 No leak from the main-process is needed since the JS-interpreter is forked, which means that the binaries and stack will have the same addresses in both processes.
 
