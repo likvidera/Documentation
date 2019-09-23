@@ -1,7 +1,7 @@
 
 # Mirc2077
 ## Intro
-I made this challenge for the SEC-T CTF 2019. It has two parts and is meant to be a bite-size 'browser-pwnable'. The javascript engine used is Duktape (https://duktape.org). A custom bug was introduced to it and can be used to get code-execution in the JS-interpreter-process. This process is heavily sandboxed with Seccomp and the second part is about escaping it by exploiting an IPC-bug in the main-process.
+I made this challenge for the SEC-T CTF 2019. It has two parts and is meant to be a minimal 'browser-pwnable'. The javascript engine used is Duktape (https://duktape.org). A custom bug was introduced to it which can be used to get code-execution in the JS-interpreter-process. This process is heavily sandboxed with Seccomp and the second part of the challenge is about escaping it by exploiting an IPC-bug in the main-process.
 
 TL;DR: The final exploit is in `exploit/pwn64.js` and is built dynamically from `exploit/exploit.py`.
 
@@ -20,7 +20,7 @@ $ checksec --file ./mirc2077
 ```
 
 ## Backdoor / Duktape bug analysis
-The player can send various messages to the android on 'IRC', this includes a link. If that link contains Javascript, it will be interpreted by the Duktape JS engine. This is a part of the diff that the player recieved that shows the bug that was introduced to Duktape.
+The player can send various messages and links to the android on 'IRC'. If the link contains Javascript, it will be interpreted by the Duktape JS engine. This is a part of the diff that the player recieved which shows the bug that was introduced to Duktape.
 ``` diff
 +DUK_INTERNAL duk_ret_t duk_bi_typedarray_sect(duk_hthread *thr) {
 +	duk_hbufobj *h_this;
@@ -92,9 +92,9 @@ struct duk_hbufobj {
   ...
 ```
 
-How the `duk_hbuffer` stores it's data is defined by it's headers magic value. If it's defined as external, then the data will be stored in a buffer pointed to by `duk_hbuffer->curr_alloc`. Otherwise, the data is kept after the structure and the `curr_alloc` pointer is ignored.
+How the `duk_hbuffer` stores it's data is defined by it's headers magic value in `duk_hbuffer->hdr->h_flags`. If it's defined as external, then the data will be stored in a buffer pointed to by `duk_hbuffer->curr_alloc`. Otherwise, the data is kept after the structure and the `curr_alloc` pointer is ignored.
 
-`Float64Array(200)` will create a non-external `duk_hbuffer` but we want it to be external as the goal is to be able to control the `duk_hbuffer->curr_alloc` pointer. If we can do this we will have an easy to work with primitive e.g: if you corrupt duk_hbuffer->cur_alloc to `0xdeadbeef` we can then do:
+For example, `Float64Array(200)` will create a non-external `duk_hbuffer` but we want it to be external as the goal is to be able to control the `duk_hbuffer->curr_alloc` pointer. If we can do this we will have an easy to work with primitive e.g: if you corrupt duk_hbuffer->cur_alloc to `0xdeadbeef` we can then do:
 * `var val =  corrupted_typedarray[0];` - read from 0xdeadbeef
 * `corrupted_typedarray[0] = val;` - write to 0xdeadbeef
 
@@ -105,14 +105,33 @@ To create a fully controlled read-write-what-anywhere primitive the strategy is 
 * Cycle through the TypedArray objects and find which one points to our controlled `duk_hbuffer` by detecting the change
 * Corrupt the `duk_hbuffer->hdr->h_flag` so it's magic value reflects an external duk_hbuffer object
 
-As the `duk_hbuffer` is now external, we can corrupt `duk_hbuffer->curr_alloc` to gain the controlled-read/write anywhere primitive.
+As the `duk_hbuffer` is now external, we can corrupt `duk_hbuffer->curr_alloc` to gain the controlled-read/write anywhere primitive. This is done with some helper functions, such as
 
-With full R/W-access to the memoryspace of the process, we can now work towards code-exec.
+``` js
+/* set_ctx sets the duk_hbuffer to dynamic/external*/
+this.set_ctx = function() {
+  this.hbuf_obj[this.buf_offset+4] = i2d(0xdeadbeef); /* target_addr */
+  this.hbuf_obj[this.buf_offset+5] = i2d(0x0);
+  this.hbuf_obj[this.buf_offset] = i2d(0x0000222200000081); /* set magic to 81 (dynamic/external) and refcount to 2 */
+};
+
+this.write64 = function(addr, val) {
+  this.hbuf_obj[this.buf_offset+4] = addr;
+  this.hobj[0] = val;
+};
+
+this.read64 = function(addr) {
+  this.hbuf_obj[this.buf_offset+4] = i2d(addr);
+  return d2i(this.hobj[0]);
+};
+
+```
+With full R/W-access to the process, we can now work towards code-exec.
 
 ### Create a leak-primitive and leak libc
 The next steps for code-exec are
 * Leak a pointer to the mirc2077 binary and calculate the base address of it
-* Using the base address of mirc2077, read one of it's .got entries to leak an offset into libc.
+* Using the base address of mirc2077, read one of it's `.got` entries to leak an offset into libc.
 
 To understand the next part, one should know that all duktape objects starts with a `duk_hobject` struct that contains a `duk_heaphdr` struct.
 ``` c
@@ -190,14 +209,14 @@ The main process will fork a child-process and apply Seccomp before it executes 
 
 After the JS-interpretation-process creation, the main-process will enter an `ipc_loop` which expects `ipc_msg` structures. The `ipc_loop` will process each `ipc_message` and call the function that maps to the `ipc_msg->id`.
 
-To use the IPC, you would write the following structure to the IPC-fd and then read it back for the result.
+To use the IPC, you would write the following structure to the `ipc-fd` and then read it back for the result.
 ``` c
 struct ipc_msg {
  u8 magic[8]; // IRC_IPC\0
  u64 id;      // f.ex. IPC_JS_SUCCESS 0xac1d0001
  u64 debug;   // enable debug-mode output
  u64 status;
- u64 result;
+ u64 result; // result :-)
  u64 arg0;
  u64 arg1;
 };
