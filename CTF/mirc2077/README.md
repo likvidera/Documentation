@@ -1,7 +1,7 @@
 
 # Mirc2077
 ## Intro
-I made this challenge for the `SEC-T CTF 2019`. It has two parts and is meant to be a bite-size 'browser-pwnable'. The javascript engine used is Duktape (https://duktape.org). A custom bug was introduced to it and can be used to get code-execution in the JS-interpreter-process. This process is heavily sandboxed with Seccomp and the second part is about escaping it by exploiting an IPC-bug in the main-process.
+I made this challenge for the SEC-T CTF 2019. It has two parts and is meant to be a bite-size 'browser-pwnable'. The javascript engine used is Duktape (https://duktape.org). A custom bug was introduced to it and can be used to get code-execution in the JS-interpreter-process. This process is heavily sandboxed with Seccomp and the second part is about escaping it by exploiting an IPC-bug in the main-process.
 
 TL;DR: The final exploit is in `exploit/pwn64.js` and is built dynamically from `exploit/exploit.py`.
 
@@ -111,10 +111,10 @@ With full R/W-access to the memoryspace of the process, we can now work towards 
 
 ### Create a leak-primitive and leak libc
 The next steps for code-exec are
-* Leak a pointer to the mirc2077 binary and calculate the baseaddress of it
-* Using the baseaddress of mirc2077, read one of it's .got entries to leak an offset into libc.
+* Leak a pointer to the mirc2077 binary and calculate the base address of it
+* Using the base address of mirc2077, read one of it's .got entries to leak an offset into libc.
 
-To understand the next part, one should know that all duktape objects starts with a `duk_hobject` that contains a `duk_heaphdr`.
+To understand the next part, one should know that all duktape objects starts with a `duk_hobject` struct that contains a `duk_heaphdr` struct.
 ``` c
 struct duk_heaphdr {
   duk_uint32_t h_flags;
@@ -123,9 +123,9 @@ struct duk_heaphdr {
   duk_heaphdr *h_prev;
   ...
 ```
-The `duk_heaphdr` contains a linked-list that can be used to traverse all the duktape objects. We can leak the `h_next` and `h_prev` pointers from f.ex. our duk_hbuffer object. These can then be used to find objects of interest via their `duk_heaphdr->h_flags` magic value.
+The `duk_heaphdr` contains a linked-list e.g. `duk_heaphdr->h_next` that can be used to traverse all the allocated duktape objects. We can leak the `h_next` and `h_prev` pointers from our `duk_hbuffer` object. These can then be used to find objects of interest via their `duk_heaphdr->h_flags` magic value.
 
-One of these objects of interest are the `duk_hnatfunc` one. `duk_hnatfunc->func` will contain a pointer to the mirc2007 binary. In my case, it would be the performance.now() native function.
+One object of interest is the `duk_hnatfunc`. In these objects there is a function pointer to a native c-function. I.e. `duk_hnatfunc->func` will contain a pointer to the mirc2007 binary. In my case, performance.now() would be my first hit when traversing for this type of object.
 ```c
 struct duk_hnatfunc {
   duk_hobject obj;
@@ -138,10 +138,9 @@ struct duk_hnatfunc {
 The following JS code will find the `performance.now()` native function object and from that, leak libc and rebase the ROP-chain that is used later on.
 ```js
 this.leak_libc = function(addr) {
-  var elf_base = 0;
   addr = this.find_native_func(addr);
   if(addr)
-    elf_base = this.find_elf(addr, max_search);
+    elf_base = this.find_elf(addr);
   if(elf_base)
   {
     this.elf = d2i(elf_base.asDouble());
@@ -156,7 +155,7 @@ this.leak_libc = function(addr) {
 };
 ``` 
 ### Get code-exec and pivot to shellcode
-At this point, we could overwrite the `duk_hnatfunc->func` for RIP-control. However, controlling the arguments is not as easy due to how duktape passes the arguments via it's context-pointer.
+At this point we could overwrite the `duk_hnatfunc->func` for RIP-control. However, controlling the arguments is not as easy due to how duktape passes the arguments via it's context-pointer.
 
 Another option is to leak the `environ` pointer from libc. This points to the current stack of the process. Walk the stack for a target return-address and overwrite it with a ROP-chain. I chose `<duk_eval_raw+110> ` as it will be hit after interpreting the Javascript.
 
@@ -185,11 +184,11 @@ The sandbox-restrictions can be dumped with https://github.com/david942j/seccomp
  0015: 0x06 0x00 0x00 0x7fff0000  return ALLOW
  0016: 0x06 0x00 0x00 0x00000000  return KILL
 ```
-Thankfully we can mmap RWX-pages for pivoting to shellcode where we can setup more elaborate IPC payloads.
+We can't open files or pop a shell but thankfully we can mmap RWX-pages for pivoting to shellcode where we can setup more elaborate IPC-payloads. These are stored in `exploit/*.asm`
 ### IPC communication
-The main process will fork a child-process and apply seccomp to it to do the 'dangerous' JS-interpretation. It will pass two file-descriptors to the sandboxed-process. One is to the Log-functionality (`log-fd`) and the other is for the IPC-functionality (`ipc-fd`)
+The main process will fork a child-process and apply Seccomp before it executes the 'dangerous' JS-interpretation. It will pass two file-descriptors to the sandboxed-process. One is to the Log-functionality (`log-fd`) and the other is for the IPC-functionality (`ipc-fd`)
 
-After the JS-interpretation-process creation, the main-process will enter an `ipc_loop` which expects `ipc_msg` structures. The `ipc_loop` will process each `ipc_message`can call the function that maps to the `ipc_msg->id`.
+After the JS-interpretation-process creation, the main-process will enter an `ipc_loop` which expects `ipc_msg` structures. The `ipc_loop` will process each `ipc_message` and call the function that maps to the `ipc_msg->id`.
 
 To use the IPC, you would write the following structure to the IPC-fd and then read it back for the result.
 ``` c
@@ -207,10 +206,10 @@ struct ipc_msg {
 ### IPC bug-analysis
 The IPC between the main-process and the JS-interpreter-process is meant to support caching of responses. It doesn't do a great job at it though. The basic functionality consist of
 ``` c
+u64 ipc_cache_create(u64 id, u64 size) - Create cache
 u64 ipc_cache_create_data(u64 id, u64 size) - Allocate cache data buffer
 u64 ipc_cache_set_data(u64 id) - Set cache data
 u64 ipc_cache_get_data(u64 id) - Read cache data
-u64 ipc_cache_create(u64 id, u64 size) - Create cache
 u64 ipc_cache_dup(u64 id) - Duplicate existing cache
 u32 ipc_cache_close(u64 id) - Close cache
 ```
@@ -223,12 +222,12 @@ struct cache {
   u64 size;
 };
 
-struct cache_head {
+struct cache_head { // allocated via ipc_cache_create
   u64 id;
   struct cache *cache_ptr;
 };
 ```
-The `ipc_cache_dup` will create a new `cache_head` and assign it the `cache_ptr` of the requested cache-id to be duped. If successful, it will increase the refcount of the `cache`. The problem is that the refcount is kept as a byte and with no checks in place it can be easily be overflown through consecutive calls to `ipc_cache_dup`.
+The `ipc_cache_dup` will create a new `cache_head` and assign it the `cache_ptr` of the requested `cache_head->id` to be duped. If successful, it will increase the refcount of the `cache`. The problem is that the refcount is kept as a byte and with no checks in place it can be easily be overflown through consecutive calls to `ipc_cache_dup`.
 
 This by itself is bad but in conjunction with `ipc_cache_close` we can cause a use-after-free.
 
@@ -253,13 +252,13 @@ u32 ipc_cache_close(u64 id)
     }
   }
 ```
-If we call `ipc_cache_dup` enough for it to wrap-around to 1 and then call `ipc_cache_close` on one of the duped caches, the underlying `cache` will be released while we still retain references to it.
+If we call `ipc_cache_dup` enough for the `cache->refcount` to wrap-around to 1 and then call `ipc_cache_close` on one of the duped caches, the underlying `cache` will be released while we still retain references to it.
 
-By reclaiming the `cache` memory we can control the `cache->data_ptr` which then becomes a `read/write-what-anywhere primitive` through the `ipc_cache_get_data` and `ipc_cache_set_data` calls.
+By reclaiming the `cache` memory we can control the `cache->data_ptr` which then becomes a read/write-what-anywhere primitive through the `ipc_cache_get_data` and `ipc_cache_set_data` calls.
 
-## Get some flags
+## How to get the flags
 ### Flag #1 - HOW-2-IPC
-Having code-exec in the JS-interpreter-process is enough to get the first flag. We simply need to perform an IPC-call with the id `IPC_REQUEST_FLAG    0xac1d1337`. This will read the `./flag` from the main-process and write it back to us over the IPC. The flag can then be output by writing it to the `log-fd`.
+Having code-exec in the JS-interpreter-process is enough to get the first flag. We simply need to perform an IPC-call with the id `IPC_REQUEST_FLAG    (0xac1d1337)`. This will read the `./flag` from the main-process and write it back to us over the IPC. The flag can then be output by writing it to the `log-fd`.
 
 ### Flag #2 - Escape the Seccomp sandbox
 To exploit the IPC-bug, these steps are taken:
@@ -275,7 +274,7 @@ No leak from the main-process is needed since the JS-interpreter is forked, whic
 
 We can use the same trick that we used to execute our initial ROP-chain. We find a suitable target on the stack and overwrite it with a ROP-chain. In my case, the target was `<exec_js_renderer+010d>` which will be hit when the `ipc_loop` returns. 
 
-After writing the payload to the stack we send a final IPC-message of `IPC_JS_SUCCESS      0xac1d0001` so the main-process exists the `ipc_loop` and we get code-exec in the main-process.
+After writing the final ROP-chain to the main-process stack we send a final IPC-message of `IPC_JS_SUCCESS      (0xac1d0001)` so the main-process exists the `ipc_loop` and we get code-exec in the main-process.
 
 The payload is simply a one_gadget / god_gadget from the libc which can be found using the tool https://github.com/david942j/one_gadget. Some of the stack is also zeroed out to fit the constraint of the one_gadget.
 
